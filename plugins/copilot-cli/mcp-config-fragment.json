@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "gastown-hooks": {
+      "type": "http",
+      "url": "http://localhost:3012/mcp",
+      "description": "Gas Town orchestration tools — mail, hooks, events, session management"
+    }
+  }
+}
