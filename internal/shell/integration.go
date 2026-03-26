@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/steveyegge/gastown/internal/state"
@@ -22,8 +23,17 @@ func hookSourceLine() string {
 		state.ConfigDir(), state.ConfigDir())
 }
 
+// pwshProfileSourceLine returns the PowerShell profile dot-source line.
+func pwshProfileSourceLine() string {
+	return fmt.Sprintf(`. "%s"`,
+		filepath.Join(state.ConfigDir(), "shell-hook.ps1"))
+}
+
 func Install() error {
 	shell := DetectShell()
+	if shell == "powershell" {
+		return installPowerShell()
+	}
 	rcPath := RCFilePath(shell)
 
 	if err := writeHookScript(); err != nil {
@@ -37,6 +47,20 @@ func Install() error {
 	return state.SetShellIntegration(shell)
 }
 
+// installPowerShell installs the Gas Town hook into the PowerShell profile.
+func installPowerShell() error {
+	if err := writePowerShellHookScript(); err != nil {
+		return fmt.Errorf("writing PowerShell hook script: %w", err)
+	}
+
+	profilePath := RCFilePath("powershell")
+	if err := addToRCFile(profilePath); err != nil {
+		return fmt.Errorf("updating %s: %w", profilePath, err)
+	}
+
+	return state.SetShellIntegration("powershell")
+}
+
 func Remove() error {
 	shell := DetectShell()
 	rcPath := RCFilePath(shell)
@@ -45,7 +69,12 @@ func Remove() error {
 		return fmt.Errorf("updating %s: %w", rcPath, err)
 	}
 
-	hookPath := filepath.Join(state.ConfigDir(), "shell-hook.sh")
+	// Remove the appropriate hook script.
+	hookFile := "shell-hook.sh"
+	if shell == "powershell" {
+		hookFile = "shell-hook.ps1"
+	}
+	hookPath := filepath.Join(state.ConfigDir(), hookFile)
 	if err := os.Remove(hookPath); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("removing hook script: %w", err)
 	}
@@ -54,6 +83,19 @@ func Remove() error {
 }
 
 func DetectShell() string {
+	// On Windows, prefer PowerShell unless running inside WSL/Git Bash.
+	if runtime.GOOS == "windows" {
+		// Check if we're in a POSIX-like environment (WSL, Git Bash, MSYS2).
+		if shell := os.Getenv("SHELL"); shell != "" {
+			if strings.HasSuffix(shell, "bash") {
+				return "bash"
+			}
+			if strings.HasSuffix(shell, "zsh") {
+				return "zsh"
+			}
+		}
+		return "powershell"
+	}
 	shell := os.Getenv("SHELL")
 	if strings.HasSuffix(shell, "zsh") {
 		return "zsh"
@@ -69,6 +111,11 @@ func RCFilePath(shell string) string {
 	switch shell {
 	case "bash":
 		return filepath.Join(home, ".bashrc")
+	case "powershell":
+		// PowerShell profile: $HOME\Documents\PowerShell\Microsoft.PowerShell_profile.ps1
+		// Works for both PowerShell 7+ (pwsh) and Windows PowerShell 5.1.
+		docs := filepath.Join(home, "Documents", "PowerShell")
+		return filepath.Join(docs, "Microsoft.PowerShell_profile.ps1")
 	default:
 		return filepath.Join(home, ".zshrc")
 	}
@@ -95,7 +142,13 @@ func addToRCFile(path string) error {
 		return updateRCFile(path, content)
 	}
 
-	block := fmt.Sprintf("\n%s\n%s\n%s\n", markerStart, hookSourceLine(), markerEnd)
+	// Use the appropriate source line based on file type.
+	sourceLine := hookSourceLine()
+	if strings.HasSuffix(path, ".ps1") {
+		sourceLine = pwshProfileSourceLine()
+	}
+
+	block := fmt.Sprintf("\n%s\n%s\n%s\n", markerStart, sourceLine, markerEnd)
 
 	if len(data) > 0 {
 		backupPath := path + ".gastown-backup"
@@ -145,7 +198,12 @@ func updateRCFile(path, content string) error {
 	}
 	endIdx += startIdx + len(markerEnd)
 
-	block := fmt.Sprintf("%s\n%s\n%s", markerStart, hookSourceLine(), markerEnd)
+	sourceLine := hookSourceLine()
+	if strings.HasSuffix(path, ".ps1") {
+		sourceLine = pwshProfileSourceLine()
+	}
+
+	block := fmt.Sprintf("%s\n%s\n%s", markerStart, sourceLine, markerEnd)
 	newContent := content[:startIdx] + block + content[endIdx:]
 
 	return os.WriteFile(path, []byte(newContent), 0644)
@@ -299,6 +357,110 @@ case "${SHELL##*/}" in
         fi
         ;;
 esac
+
+_gastown_hook
+`
+
+// writePowerShellHookScript writes the PowerShell equivalent of shell-hook.sh.
+func writePowerShellHookScript() error {
+	dir := state.ConfigDir()
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+
+	hookPath := filepath.Join(dir, "shell-hook.ps1")
+	return os.WriteFile(hookPath, []byte(pwshHookScript), 0644)
+}
+
+var pwshHookScript = `# Gas Town Shell Integration (PowerShell)
+# Installed by: gt install --shell
+# Location: ~/.config/gastown/shell-hook.ps1
+
+function _gastown_enabled {
+    if ($env:GASTOWN_DISABLED) { return $false }
+    if ($env:GASTOWN_ENABLED) { return $true }
+    $stateFile = Join-Path $HOME ".local" "state" "gastown" "state.json"
+    if (Test-Path $stateFile) {
+        $content = Get-Content $stateFile -Raw -ErrorAction SilentlyContinue
+        return $content -match '"enabled"\s*:\s*true'
+    }
+    return $false
+}
+
+function _gastown_ignored {
+    $dirPath = (Get-Location).Path
+    while ($dirPath -ne [System.IO.Path]::GetPathRoot($dirPath)) {
+        if (Test-Path (Join-Path $dirPath ".gastown-ignore")) { return $true }
+        $dirPath = Split-Path $dirPath -Parent
+        if (-not $dirPath) { break }
+    }
+    return $false
+}
+
+function _gastown_hook {
+    if (-not (_gastown_enabled)) {
+        Remove-Item Env:\GT_TOWN_ROOT -ErrorAction SilentlyContinue
+        Remove-Item Env:\GT_RIG -ErrorAction SilentlyContinue
+        return
+    }
+
+    if (_gastown_ignored) {
+        Remove-Item Env:\GT_TOWN_ROOT -ErrorAction SilentlyContinue
+        Remove-Item Env:\GT_RIG -ErrorAction SilentlyContinue
+        return
+    }
+
+    $gitDir = git rev-parse --git-dir 2>$null
+    if (-not $gitDir) {
+        Remove-Item Env:\GT_TOWN_ROOT -ErrorAction SilentlyContinue
+        Remove-Item Env:\GT_RIG -ErrorAction SilentlyContinue
+        return
+    }
+
+    $repoRoot = git rev-parse --show-toplevel 2>$null
+    if (-not $repoRoot) {
+        Remove-Item Env:\GT_TOWN_ROOT -ErrorAction SilentlyContinue
+        Remove-Item Env:\GT_RIG -ErrorAction SilentlyContinue
+        return
+    }
+
+    $cacheFile = Join-Path $HOME ".cache" "gastown" "rigs.cache"
+    if (Test-Path $cacheFile) {
+        $cached = Select-String -Path $cacheFile -Pattern "^$([regex]::Escape($repoRoot)):" -ErrorAction SilentlyContinue
+        if ($cached) {
+            $vars = $cached.Line.Substring($cached.Line.IndexOf(':') + 1)
+            # Parse KEY=VALUE pairs
+            foreach ($pair in ($vars -split ';')) {
+                if ($pair -match '^(\w+)=(.*)$') {
+                    Set-Item "Env:\$($Matches[1])" $Matches[2]
+                }
+            }
+            return
+        }
+    }
+
+    if (Get-Command gt -ErrorAction SilentlyContinue) {
+        $detectOutput = gt rig detect $repoRoot 2>$null
+        if ($detectOutput) {
+            foreach ($line in $detectOutput) {
+                if ($line -match '^export\s+(\w+)="?([^"]*)"?$') {
+                    Set-Item "Env:\$($Matches[1])" $Matches[2]
+                } elseif ($line -match '^(\w+)=(.*)$') {
+                    Set-Item "Env:\$($Matches[1])" $Matches[2]
+                }
+            }
+        }
+    }
+}
+
+# Run hook on prompt to detect Gas Town workspaces.
+if (-not ($function:prompt -and ($function:prompt.ToString() -match '_gastown_hook'))) {
+    $function:_gastown_original_prompt = $function:prompt
+    function prompt {
+        _gastown_hook
+        _gastown_original_prompt
+    }
+}
 
 _gastown_hook
 `

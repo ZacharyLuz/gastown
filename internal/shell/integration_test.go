@@ -6,6 +6,7 @@ package shell
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -19,7 +20,6 @@ func TestDetectShell(t *testing.T) {
 		{"/usr/bin/zsh", "zsh"},
 		{"/bin/bash", "bash"},
 		{"/usr/bin/bash", "bash"},
-		{"", "zsh"},
 	}
 
 	for _, tt := range tests {
@@ -34,6 +34,24 @@ func TestDetectShell(t *testing.T) {
 			}
 		})
 	}
+
+	// Default (no $SHELL) depends on platform.
+	t.Run("default", func(t *testing.T) {
+		orig := os.Getenv("SHELL")
+		defer os.Setenv("SHELL", orig)
+		os.Setenv("SHELL", "")
+
+		got := DetectShell()
+		if runtime.GOOS == "windows" {
+			if got != "powershell" {
+				t.Errorf("DetectShell() on Windows = %q, want %q", got, "powershell")
+			}
+		} else {
+			if got != "zsh" {
+				t.Errorf("DetectShell() on Unix = %q, want %q", got, "zsh")
+			}
+		}
+	})
 }
 
 func TestRCFilePath(t *testing.T) {
@@ -45,6 +63,7 @@ func TestRCFilePath(t *testing.T) {
 	}{
 		{"zsh", filepath.Join(home, ".zshrc")},
 		{"bash", filepath.Join(home, ".bashrc")},
+		{"powershell", filepath.Join(home, "Documents", "PowerShell", "Microsoft.PowerShell_profile.ps1")},
 	}
 
 	for _, tt := range tests {

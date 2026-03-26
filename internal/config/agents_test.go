@@ -19,7 +19,7 @@ func isClaudeCmd(cmd string) bool {
 func TestBuiltinPresets(t *testing.T) {
 	t.Parallel()
 	// Ensure all built-in presets are accessible
-	presets := []AgentPreset{AgentClaude, AgentGemini, AgentCodex, AgentCursor, AgentAuggie, AgentAmp, AgentOpenCode, AgentCopilot, AgentPi, AgentOmp}
+	presets := []AgentPreset{AgentClaude, AgentGemini, AgentCodex, AgentCursor, AgentAuggie, AgentAmp, AgentOpenCode, AgentCopilot, AgentPi, AgentOmp, AgentGHCP}
 
 	for _, preset := range presets {
 		info := GetAgentPreset(preset)
@@ -28,11 +28,16 @@ func TestBuiltinPresets(t *testing.T) {
 			continue
 		}
 
+		// Headless presets (e.g., ghcp) have no CLI binary.
+		if info.Headless {
+			continue
+		}
+
 		if info.Command == "" {
 			t.Errorf("preset %s has empty Command", preset)
 		}
 
-		// All presets should have ProcessNames for agent detection
+		// All non-headless presets should have ProcessNames for agent detection
 		if len(info.ProcessNames) == 0 {
 			t.Errorf("preset %s has empty ProcessNames", preset)
 		}
@@ -57,6 +62,7 @@ func TestGetAgentPresetByName(t *testing.T) {
 		{"copilot", AgentCopilot, false},   // Built-in GitHub Copilot CLI agent
 		{"pi", AgentPi, false},             // Pi Coding Agent
 		{"omp", AgentOmp, false},           // Oh My Pi
+		{"ghcp", AgentGHCP, false},         // GitHub Copilot in VS Code (headless)
 		{"unknown", "", true},
 	}
 
@@ -140,6 +146,7 @@ func TestIsKnownPreset(t *testing.T) {
 		{"copilot", true},  // Built-in GitHub Copilot CLI agent
 		{"pi", true},       // Pi Coding Agent
 		{"omp", true},      // Oh My Pi
+		{"ghcp", true},     // GitHub Copilot in VS Code (headless)
 		{"unknown", false},
 		{"chatgpt", false},
 	}
@@ -632,7 +639,7 @@ func TestGetProcessNames(t *testing.T) {
 func TestListAgentPresetsMatchesConstants(t *testing.T) {
 	t.Parallel()
 	// Ensure all AgentPreset constants are returned by ListAgentPresets
-	allConstants := []AgentPreset{AgentClaude, AgentGemini, AgentCodex, AgentCursor, AgentAuggie, AgentAmp, AgentOpenCode, AgentCopilot, AgentPi, AgentOmp}
+	allConstants := []AgentPreset{AgentClaude, AgentGemini, AgentCodex, AgentCursor, AgentAuggie, AgentAmp, AgentOpenCode, AgentCopilot, AgentPi, AgentOmp, AgentGHCP}
 	presets := ListAgentPresets()
 
 	// Convert to map for quick lookup
@@ -1477,12 +1484,12 @@ func TestACPModes(t *testing.T) {
 	t.Cleanup(ResetRegistryForTesting)
 
 	tests := []struct {
-		name      string
-		rc        *RuntimeConfig
-		wantACP   bool
-		wantMode  string
-		wantCmd   string
-		wantArgs  []string
+		name     string
+		rc       *RuntimeConfig
+		wantACP  bool
+		wantMode string
+		wantCmd  string
+		wantArgs []string
 	}{
 		{
 			name: "native mode - claude-agent-acp",
@@ -1624,5 +1631,55 @@ func TestACPModeConstants(t *testing.T) {
 	}
 	if ACPModeFlag != "flag" {
 		t.Errorf("ACPModeFlag = %q, want flag", ACPModeFlag)
+	}
+}
+
+func TestGHCPAgentPreset(t *testing.T) {
+	t.Parallel()
+	info := GetAgentPreset(AgentGHCP)
+	if info == nil {
+		t.Fatal("ghcp preset not found")
+	}
+
+	// GHCP is headless — VS Code IS the agent, no CLI to launch.
+	if !info.Headless {
+		t.Error("ghcp should be headless")
+	}
+	if info.Command != "" {
+		t.Errorf("ghcp command = %q, want empty (headless)", info.Command)
+	}
+	if info.Args != nil {
+		t.Errorf("ghcp args = %v, want nil (headless)", info.Args)
+	}
+	if info.ProcessNames != nil {
+		t.Errorf("ghcp ProcessNames = %v, want nil (headless)", info.ProcessNames)
+	}
+
+	// Hooks via MCP, not file-based.
+	if !info.SupportsHooks {
+		t.Error("ghcp should support hooks (via hooks-mcp)")
+	}
+	if info.HooksProvider != "mcp" {
+		t.Errorf("ghcp HooksProvider = %q, want mcp", info.HooksProvider)
+	}
+	if !info.HooksInformational {
+		t.Error("ghcp should have informational hooks")
+	}
+
+	// Config and instructions.
+	if info.ConfigDir != ".github" {
+		t.Errorf("ghcp ConfigDir = %q, want .github", info.ConfigDir)
+	}
+	if info.InstructionsFile != "AGENTS.md" {
+		t.Errorf("ghcp InstructionsFile = %q, want AGENTS.md", info.InstructionsFile)
+	}
+
+	if info.SupportsForkSession {
+		t.Error("ghcp should not support fork session")
+	}
+
+	// No tmux delay needed.
+	if info.ReadyDelayMs != 0 {
+		t.Errorf("ghcp ReadyDelayMs = %d, want 0", info.ReadyDelayMs)
 	}
 }

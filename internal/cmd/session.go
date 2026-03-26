@@ -346,6 +346,7 @@ type SessionListItem struct {
 	Polecat   string `json:"polecat"`
 	SessionID string `json:"session_id"`
 	Running   bool   `json:"running"`
+	Headless  bool   `json:"headless,omitempty"`
 }
 
 func runSessionList(cmd *cobra.Command, args []string) error {
@@ -402,6 +403,10 @@ func runSessionList(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// Discover headless sessions from .runtime/sessions/
+	headlessSessions := discoverHeadlessSessions(townRoot, sessionRigFilter)
+	allSessions = append(allSessions, headlessSessions...)
+
 	// Output
 	if sessionListJSON {
 		enc := json.NewEncoder(os.Stdout)
@@ -420,11 +425,82 @@ func runSessionList(cmd *cobra.Command, args []string) error {
 		if !s.Running {
 			status = style.Dim.Render("○")
 		}
-		fmt.Printf("  %s %s/%s\n", status, s.Rig, s.Polecat)
+		label := fmt.Sprintf("%s/%s", s.Rig, s.Polecat)
+		if s.Headless {
+			label += " " + style.Dim.Render("[headless]")
+		}
+		fmt.Printf("  %s %s\n", status, label)
 		fmt.Printf("    %s\n", style.Dim.Render(s.SessionID))
 	}
 
 	return nil
+}
+
+// discoverHeadlessSessions scans .runtime/sessions/ for headless session
+// descriptors (written by startHeadlessSession). A headless session is
+// considered "running" if it has a fresh heartbeat file in .runtime/heartbeat/.
+func discoverHeadlessSessions(townRoot, rigFilter string) []SessionListItem {
+	sessionsDir := filepath.Join(townRoot, ".runtime", "sessions")
+	entries, err := os.ReadDir(sessionsDir)
+	if err != nil {
+		return nil
+	}
+
+	heartbeatDir := filepath.Join(townRoot, ".runtime", "heartbeat")
+	var items []SessionListItem
+
+	for _, entry := range entries {
+		if !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(sessionsDir, entry.Name()))
+		if err != nil {
+			continue
+		}
+		var desc struct {
+			SessionID string `json:"session_id"`
+			Role      string `json:"role"`
+			Rig       string `json:"rig"`
+			Agent     string `json:"agent"`
+			Headless  bool   `json:"headless"`
+			StartedAt string `json:"started_at"`
+		}
+		if err := json.Unmarshal(data, &desc); err != nil || !desc.Headless {
+			continue
+		}
+		if rigFilter != "" && desc.Rig != rigFilter {
+			continue
+		}
+
+		// Check liveness via heartbeat file
+		running := isHeadlessSessionAlive(heartbeatDir, desc.SessionID)
+
+		polecat := desc.Agent
+		if polecat == "" {
+			polecat = "copilot"
+		}
+
+		items = append(items, SessionListItem{
+			Rig:       desc.Rig,
+			Polecat:   polecat,
+			SessionID: desc.SessionID,
+			Running:   running,
+			Headless:  true,
+		})
+	}
+
+	return items
+}
+
+// isHeadlessSessionAlive checks if a headless session has a recent heartbeat.
+// A heartbeat younger than 5 minutes means the session is alive.
+func isHeadlessSessionAlive(heartbeatDir, sessionID string) bool {
+	hbPath := filepath.Join(heartbeatDir, sessionID+".json")
+	info, err := os.Stat(hbPath)
+	if err != nil {
+		return false
+	}
+	return time.Since(info.ModTime()) < 5*time.Minute
 }
 
 func runSessionCapture(cmd *cobra.Command, args []string) error {

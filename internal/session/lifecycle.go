@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -110,6 +111,12 @@ type SessionConfig struct {
 
 	// VerifySurvived checks that the session is still alive after startup.
 	VerifySurvived bool
+
+	// Headless indicates the agent runs outside tmux (e.g., VS Code is the host).
+	// When true, StartSession writes session metadata to disk and returns
+	// without creating a tmux session. The external host (e.g., vscode-bridge)
+	// is responsible for event emission and session lifecycle.
+	Headless bool
 }
 
 // StartResult contains the results of session startup.
@@ -168,6 +175,13 @@ func StartSession(t *tmux.Tmux, cfg SessionConfig) (_ *StartResult, retErr error
 	}
 	if err := runtime.EnsureSettingsForRole(settingsDir, cfg.WorkDir, cfg.Role, runtimeConfig); err != nil {
 		return nil, fmt.Errorf("ensuring runtime settings: %w", err)
+	}
+
+	// Headless path: agent runs outside tmux (e.g., GHCP — VS Code is the host).
+	// Write session metadata to disk for the bridge extension to discover,
+	// then return immediately without creating a tmux session.
+	if cfg.Headless {
+		return startHeadlessSession(ctx, cfg, runtimeConfig, runID)
 	}
 
 	// 3. Build startup command if not provided.
@@ -466,4 +480,60 @@ func buildCommand(cfg SessionConfig, prompt string) (string, error) {
 // Some roles use this instead of the runtime's ready delay.
 func ShutdownDelay() time.Duration {
 	return constants.ShutdownNotifyDelay
+}
+
+// startHeadlessSession handles session startup for agents that run outside tmux.
+// Instead of creating a tmux session, it writes session metadata to disk so the
+// external host (e.g., VS Code's vscode-bridge extension) can discover and
+// integrate with Gas Town's event/session system.
+//
+// Metadata is written to:
+//   - <TownRoot>/.runtime/sessions/<SessionID>.json  — session descriptor
+//   - <TownRoot>/.runtime/sessions/<SessionID>.env   — environment variables
+func startHeadlessSession(_ context.Context, cfg SessionConfig, runtimeConfig *config.RuntimeConfig, runID string) (*StartResult, error) {
+	// Build environment variables (same as tmux path, just written to disk).
+	envVars := config.AgentEnv(config.AgentEnvConfig{
+		Role:             cfg.Role,
+		Rig:              cfg.RigName,
+		AgentName:        cfg.AgentName,
+		TownRoot:         cfg.TownRoot,
+		RuntimeConfigDir: cfg.RuntimeConfigDir,
+		Agent:            cfg.AgentOverride,
+		SessionName:      cfg.SessionID,
+	})
+	envVars = MergeRuntimeLivenessEnv(envVars, runtimeConfig)
+	envVars["GT_RUN"] = runID
+	envVars["GT_HEADLESS"] = "true"
+	for k, v := range cfg.ExtraEnv {
+		envVars[k] = v
+	}
+
+	// Write session metadata to the runtime sessions directory.
+	sessionsDir := filepath.Join(cfg.TownRoot, constants.DirRuntime, "sessions")
+	if err := os.MkdirAll(sessionsDir, 0755); err != nil {
+		return nil, fmt.Errorf("creating sessions directory: %w", err)
+	}
+
+	// Write .env file (KEY=VALUE per line) for the bridge extension to source.
+	var envLines strings.Builder
+	for _, k := range mapKeysSorted(envVars) {
+		fmt.Fprintf(&envLines, "%s=%s\n", k, envVars[k])
+	}
+	envPath := filepath.Join(sessionsDir, cfg.SessionID+".env")
+	if err := os.WriteFile(envPath, []byte(envLines.String()), 0644); err != nil {
+		return nil, fmt.Errorf("writing session env: %w", err)
+	}
+
+	// Write JSON session descriptor for programmatic discovery.
+	descriptor := fmt.Sprintf(`{"session_id":%q,"run_id":%q,"role":%q,"rig":%q,"agent":%q,"work_dir":%q,"headless":true,"started_at":%q}`,
+		cfg.SessionID, runID, cfg.Role, cfg.RigName, cfg.AgentName, cfg.WorkDir, time.Now().UTC().Format(time.RFC3339))
+	jsonPath := filepath.Join(sessionsDir, cfg.SessionID+".json")
+	if err := os.WriteFile(jsonPath, []byte(descriptor+"\n"), 0644); err != nil {
+		return nil, fmt.Errorf("writing session descriptor: %w", err)
+	}
+
+	return &StartResult{
+		RuntimeConfig: runtimeConfig,
+		RunID:         runID,
+	}, nil
 }

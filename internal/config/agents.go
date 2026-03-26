@@ -36,6 +36,11 @@ const (
 	// AgentOmp is Oh My Pi (OMP) — Pi fork with hook-based lifecycle.
 	// Inspired by github.com/ProbabilityEngineer/pi-mono gastown integration.
 	AgentOmp AgentPreset = "omp"
+
+	// AgentGHCP is GitHub Copilot in VS Code (headless mode).
+	// VS Code IS the agent — no CLI to launch, no tmux session needed.
+	// The vscode-bridge extension handles events/sessions, hooks-mcp provides MCP tools.
+	AgentGHCP AgentPreset = "ghcp"
 )
 
 // AgentPresetInfo contains the configuration details for an agent preset.
@@ -152,6 +157,14 @@ type AgentPresetInfo struct {
 	// keystroke and the 600ms readline timeout that follows it.
 	EscapeCancelsRequest bool `json:"escape_cancels_request,omitempty"`
 
+	// Headless indicates the agent runs outside tmux — the host IDE or editor
+	// IS the agent process. gt session start registers the session and writes
+	// environment metadata to disk, but does not launch a tmux session.
+	// Events and hooks are delivered via MCP servers (hooks-mcp) or VS Code
+	// extension (vscode-bridge) rather than tmux send-keys.
+	// Examples: GitHub Copilot in VS Code (ghcp).
+	Headless bool `json:"headless,omitempty"`
+
 	// ACP is the configuration for ACP (Agent Communication Protocol) support.
 	// nil means the agent does not support ACP.
 	ACP *ACPConfig `json:"acp,omitempty"`
@@ -180,8 +193,8 @@ type ACPConfig struct {
 // ACP mode constants.
 const (
 	ACPModeSubcommand = "subcommand" // Agent has ACP as subcommand (e.g., "opencode acp")
-	ACPModeNative      = "native"    // Agent is native ACP binary (e.g., "claude-agent-acp")
-	ACPModeFlag        = "flag"      // Agent uses flag to enable ACP (e.g., "gemini --acp")
+	ACPModeNative     = "native"     // Agent is native ACP binary (e.g., "claude-agent-acp")
+	ACPModeFlag       = "flag"       // Agent uses flag to enable ACP (e.g., "gemini --acp")
 )
 
 // NonInteractiveConfig contains settings for running agents non-interactively.
@@ -253,11 +266,11 @@ var builtinPresets = map[AgentPreset]*AgentPresetInfo{
 			OutputFlag: "--output-format json",
 		},
 		// Runtime defaults
-		PromptMode:        "arg",
-		ConfigDir:         ".gemini",
-		HooksProvider:     "gemini",
-		HooksDir:          ".gemini",
-		HooksSettingsFile: "settings.json",
+		PromptMode:           "arg",
+		ConfigDir:            ".gemini",
+		HooksProvider:        "gemini",
+		HooksDir:             ".gemini",
+		HooksSettingsFile:    "settings.json",
 		ReadyDelayMs:         5000,
 		InstructionsFile:     "AGENTS.md",
 		EscapeCancelsRequest: true, // Gemini CLI uses Escape to abort active generation
@@ -277,10 +290,10 @@ var builtinPresets = map[AgentPreset]*AgentPresetInfo{
 			OutputFlag: "--json",
 		},
 		// Runtime defaults
-		PromptMode:         "none",
-		ReadyPromptPrefix:  "› ",
-		ReadyDelayMs:       3000,
-		InstructionsFile:   "AGENTS.md",
+		PromptMode:        "none",
+		ReadyPromptPrefix: "› ",
+		ReadyDelayMs:      3000,
+		InstructionsFile:  "AGENTS.md",
 	},
 	AgentCursor: {
 		Name:                AgentCursor,
@@ -372,7 +385,7 @@ var builtinPresets = map[AgentPreset]*AgentPresetInfo{
 		ResumeFlag:          "--resume",
 		ContinueFlag:        "--continue", // GA: resumes most recent session without picker
 		ResumeStyle:         "flag",
-		SupportsHooks:       true,  // Copilot CLI supports .github/hooks/*.json lifecycle hooks
+		SupportsHooks:       true, // Copilot CLI supports .github/hooks/*.json lifecycle hooks
 		SupportsForkSession: false,
 		NonInteractive: &NonInteractiveConfig{
 			PromptFlag: "-p",
@@ -426,6 +439,28 @@ var builtinPresets = map[AgentPreset]*AgentPresetInfo{
 		NonInteractive: &NonInteractiveConfig{
 			PromptFlag: "--prompt",
 		},
+	},
+	AgentGHCP: {
+		Name:                AgentGHCP,
+		Command:             "",  // No CLI to launch — VS Code IS the agent.
+		Args:                nil, // No CLI arguments.
+		ProcessNames:        nil, // Process detection not applicable; VS Code manages the process.
+		SessionIDEnv:        "",  // Session IDs managed by vscode-bridge extension on disk.
+		ResumeFlag:          "",  // VS Code sessions resume via Copilot's built-in context.
+		ResumeStyle:         "",
+		SupportsHooks:       true, // Hooks delivered via hooks-mcp MCP server.
+		SupportsForkSession: false,
+		Headless:            true, // No tmux session — VS Code is the host.
+		// Runtime defaults
+		PromptMode:         "none",    // No startup prompt injection (VS Code reads AGENTS.md directly).
+		ConfigDir:          ".github", // Standard GitHub config directory.
+		HooksProvider:      "mcp",     // Hooks via hooks-mcp server, not file-based hooks.
+		HooksDir:           ".github/hooks",
+		HooksSettingsFile:  "gastown.json",
+		HooksInformational: true, // Instructions-only; lifecycle events via MCP, not file hooks.
+		ReadyPromptPrefix:  "",   // No tmux prompt detection.
+		ReadyDelayMs:       0,    // No delay — VS Code is always ready.
+		InstructionsFile:   "AGENTS.md",
 	},
 }
 
@@ -873,12 +908,12 @@ func GetACPArgs(agentName string) []string {
 // Returns true if the RuntimeConfig has ACP configured.
 //
 // ACP can be configured in three ways:
-// 1. Native mode: { "command": "claude-agent-acp", "acp": { "mode": "native" } }
-//    The binary is already an ACP adapter, no transformation needed.
-// 2. Subcommand pattern: { "command": "opencode", "acp": { "command": "acp" } }
-//    Results in: opencode acp
-// 3. Flag pattern: { "command": "gemini", "acp": { "args": ["--acp"] } }
-//    Results in: gemini --acp
+//  1. Native mode: { "command": "claude-agent-acp", "acp": { "mode": "native" } }
+//     The binary is already an ACP adapter, no transformation needed.
+//  2. Subcommand pattern: { "command": "opencode", "acp": { "command": "acp" } }
+//     Results in: opencode acp
+//  3. Flag pattern: { "command": "gemini", "acp": { "args": ["--acp"] } }
+//     Results in: gemini --acp
 func RuntimeConfigSupportsACP(rc *RuntimeConfig) bool {
 	if rc == nil {
 		return false
@@ -911,12 +946,12 @@ func RuntimeConfigSupportsACP(rc *RuntimeConfig) bool {
 // Returns nil if the RuntimeConfig doesn't support ACP.
 //
 // ACP can be configured in three ways:
-// 1. Native mode: { "command": "claude-agent-acp", "acp": { "mode": "native" } }
-//    The binary is already an ACP adapter, no transformation needed.
-// 2. Subcommand pattern: { "command": "opencode", "acp": { "command": "acp" } }
-//    Results in: opencode acp
-// 3. Flag pattern: { "command": "gemini", "acp": { "args": ["--experimental-acp"] } }
-//    Results in: gemini --experimental-acp
+//  1. Native mode: { "command": "claude-agent-acp", "acp": { "mode": "native" } }
+//     The binary is already an ACP adapter, no transformation needed.
+//  2. Subcommand pattern: { "command": "opencode", "acp": { "command": "acp" } }
+//     Results in: opencode acp
+//  3. Flag pattern: { "command": "gemini", "acp": { "args": ["--experimental-acp"] } }
+//     Results in: gemini --experimental-acp
 func GetACPConfigFromRuntime(rc *RuntimeConfig) *ACPConfig {
 	if rc == nil {
 		return nil
