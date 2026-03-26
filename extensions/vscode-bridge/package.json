@@ -1,0 +1,60 @@
+{
+  "name": "gastown-bridge",
+  "displayName": "Gas Town Bridge",
+  "description": "Bridges Gas Town multi-agent orchestration with GitHub Copilot in VS Code — terminal hook emitter, heartbeat watcher, session context recovery.",
+  "version": "0.1.0",
+  "publisher": "dc995",
+  "engines": {
+    "vscode": "^1.100.0"
+  },
+  "categories": ["Other"],
+  "activationEvents": [
+    "workspaceContains:**/AGENTS.md"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "gastown.showStatus",
+        "title": "Gas Town: Show Status"
+      },
+      {
+        "command": "gastown.saveSession",
+        "title": "Gas Town: Save Session Context"
+      },
+      {
+        "command": "gastown.loadSession",
+        "title": "Gas Town: Load Previous Session"
+      }
+    ],
+    "configuration": {
+      "title": "Gas Town Bridge",
+      "properties": {
+        "gastown.townRoot": {
+          "type": "string",
+          "default": "",
+          "description": "Path to Gas Town workspace (default: ~/gt)"
+        },
+        "gastown.emitTerminalEvents": {
+          "type": "boolean",
+          "default": true,
+          "description": "Emit terminal command events to .events.jsonl"
+        },
+        "gastown.heartbeatWatchEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Watch Deacon heartbeat and show status in status bar"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/vscode": "^1.100.0",
+    "typescript": "^5.8.0"
+  }
+}

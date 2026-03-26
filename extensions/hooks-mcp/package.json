@@ -1,0 +1,25 @@
+{
+  "name": "gastown-hooks-mcp-app",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "description": "Gas Town Hooks MCP Server — agent-agnostic hook emitter, session manager, and Seance replay for GHCP polecats",
+  "scripts": {
+    "build": "tsc --noEmit && tsc -p tsconfig.server.json",
+    "start": "tsx watch main.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.27.0",
+    "cors": "^2.8.5",
+    "express": "^5.1.0",
+    "zod": "^4.1.13"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.0",
+    "concurrently": "^9.1.2",
+    "cross-env": "^7.0.3",
+    "tsx": "^4.19.2",
+    "typescript": "^5.8.3"
+  }
+}
